@@ -11,6 +11,9 @@ from sqlalchemy.orm import sessionmaker
 import asyncio
 import time
 import re
+from flask import Flask
+import threading
+import requests
 
 # 加载环境变量
 load_dotenv()
@@ -21,6 +24,20 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# 创建Flask应用
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return 'Bot is running!'
+
+@app.route('/ping')
+def ping():
+    return 'pong'
+
+def run_flask():
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 10000)))
 
 # 数据库配置
 Base = declarative_base()
@@ -215,6 +232,19 @@ async def clear_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
+def ping_self():
+    """定时ping自己的服务器以保持活跃"""
+    while True:
+        try:
+            # 获取Render的URL
+            render_url = os.getenv('RENDER_EXTERNAL_URL')
+            if render_url:
+                requests.get(f"{render_url}/ping")
+                logger.info("Pinged server to keep it alive")
+        except Exception as e:
+            logger.error(f"Error pinging server: {str(e)}")
+        time.sleep(300)  # 每5分钟ping一次
+
 def main():
     # 获取Bot Token
     token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -232,11 +262,24 @@ def main():
     application.add_handler(CommandHandler("mystats", mystats))
     application.add_handler(CommandHandler("clear", clear_expenses))
     
-    # 添加消息处理器
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # 添加消息处理器 - 修改这里以支持群组消息
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & (filters.ChatType.PRIVATE | filters.ChatType.GROUP),
+        handle_message
+    ))
     
     # 添加错误处理器
     application.add_error_handler(error_handler)
+
+    # 启动Flask服务器
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # 启动定时ping
+    ping_thread = threading.Thread(target=ping_self)
+    ping_thread.daemon = True
+    ping_thread.start()
 
     # 启动机器人
     application.run_polling()
