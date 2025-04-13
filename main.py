@@ -138,7 +138,7 @@ async def clear_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
-async def main():
+def main():
     # 获取Bot Token
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     if not token:
@@ -161,15 +161,7 @@ async def main():
     application.add_error_handler(error_handler)
 
     # 启动机器人
-    while True:
-        try:
-            await application.initialize()
-            await application.start()
-            await application.run_polling()
-        except Exception as e:
-            logger.error(f"Error in main loop: {str(e)}")
-            # 等待一段时间后重试
-            await asyncio.sleep(60)
+    application.run_polling()
 
 if __name__ == '__main__':
-    asyncio.run(main()) 
+    main() 
