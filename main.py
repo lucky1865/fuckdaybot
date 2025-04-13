@@ -30,6 +30,8 @@ class Expense(Base):
     
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer)
+    chat_id = Column(Integer)  # 添加群组ID
+    username = Column(String)  # 添加用户名
     amount = Column(Float)
     date = Column(DateTime, default=datetime.utcnow)
 
@@ -48,11 +50,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '-100 - 记录支出100元\n'
         '/list - 查看最近的收支记录\n'
         '/stats - 查看收支统计\n'
-        '/clear - 清空账本'
+        '/clear - 清空账本\n'
+        '/mystats - 查看个人统计'
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # 检查是否是群组消息
+        if update.message.chat.type == 'private':
+            chat_id = update.effective_user.id
+        else:
+            chat_id = update.effective_chat.id
+
         text = update.message.text.strip()
         
         # 检查是否是数字格式
@@ -66,6 +75,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = Session()
         expense = Expense(
             user_id=update.effective_user.id,
+            chat_id=chat_id,
+            username=update.effective_user.username or update.effective_user.first_name,
             amount=amount
         )
         session.add(expense)
@@ -83,8 +94,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # 检查是否是群组消息
+        if update.message.chat.type == 'private':
+            chat_id = update.effective_user.id
+        else:
+            chat_id = update.effective_chat.id
+
         session = Session()
-        expenses = session.query(Expense).filter_by(user_id=update.effective_user.id).order_by(Expense.date.desc()).limit(10).all()
+        expenses = session.query(Expense).filter_by(chat_id=chat_id).order_by(Expense.date.desc()).limit(10).all()
         session.close()
 
         if not expenses:
@@ -94,7 +111,7 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = '最近的收支记录：\n\n'
         for expense in expenses:
             amount_type = '收入' if expense.amount > 0 else '支出'
-            message += f'{expense.date.strftime("%Y-%m-%d")} - {amount_type} {abs(expense.amount)}元\n'
+            message += f'{expense.date.strftime("%Y-%m-%d")} - {expense.username} - {amount_type} {abs(expense.amount)}元\n'
 
         await update.message.reply_text(message)
     except Exception as e:
@@ -103,8 +120,14 @@ async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # 检查是否是群组消息
+        if update.message.chat.type == 'private':
+            chat_id = update.effective_user.id
+        else:
+            chat_id = update.effective_chat.id
+
         session = Session()
-        expenses = session.query(Expense).filter_by(user_id=update.effective_user.id).all()
+        expenses = session.query(Expense).filter_by(chat_id=chat_id).all()
         session.close()
 
         if not expenses:
@@ -115,19 +138,73 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_expense = sum(abs(expense.amount) for expense in expenses if expense.amount < 0)
         balance = total_income - total_expense
 
-        message = f'总收入：{total_income}元\n'
+        # 按用户统计
+        user_stats = {}
+        for expense in expenses:
+            if expense.username not in user_stats:
+                user_stats[expense.username] = {'income': 0, 'expense': 0}
+            if expense.amount > 0:
+                user_stats[expense.username]['income'] += expense.amount
+            else:
+                user_stats[expense.username]['expense'] += abs(expense.amount)
+
+        message = f'群组统计：\n'
+        message += f'总收入：{total_income}元\n'
         message += f'总支出：{total_expense}元\n'
-        message += f'结余：{balance}元'
+        message += f'结余：{balance}元\n\n'
+        
+        message += '个人贡献：\n'
+        for username, stats in user_stats.items():
+            message += f'{username}：收入 {stats["income"]}元，支出 {stats["expense"]}元\n'
 
         await update.message.reply_text(message)
     except Exception as e:
         logger.error(f"Error in stats: {str(e)}")
         await update.message.reply_text('获取统计信息时发生错误，请稍后重试')
 
+async def mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # 检查是否是群组消息
+        if update.message.chat.type == 'private':
+            chat_id = update.effective_user.id
+        else:
+            chat_id = update.effective_chat.id
+
+        session = Session()
+        expenses = session.query(Expense).filter_by(
+            chat_id=chat_id,
+            user_id=update.effective_user.id
+        ).all()
+        session.close()
+
+        if not expenses:
+            await update.message.reply_text('暂无个人收支记录')
+            return
+
+        total_income = sum(expense.amount for expense in expenses if expense.amount > 0)
+        total_expense = sum(abs(expense.amount) for expense in expenses if expense.amount < 0)
+        balance = total_income - total_expense
+
+        message = f'个人统计：\n'
+        message += f'总收入：{total_income}元\n'
+        message += f'总支出：{total_expense}元\n'
+        message += f'结余：{balance}元'
+
+        await update.message.reply_text(message)
+    except Exception as e:
+        logger.error(f"Error in mystats: {str(e)}")
+        await update.message.reply_text('获取个人统计信息时发生错误，请稍后重试')
+
 async def clear_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # 检查是否是群组消息
+        if update.message.chat.type == 'private':
+            chat_id = update.effective_user.id
+        else:
+            chat_id = update.effective_chat.id
+
         session = Session()
-        session.query(Expense).filter_by(user_id=update.effective_user.id).delete()
+        session.query(Expense).filter_by(chat_id=chat_id).delete()
         session.commit()
         session.close()
         await update.message.reply_text('账本已清空')
@@ -152,6 +229,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("list", list_expenses))
     application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("mystats", mystats))
     application.add_handler(CommandHandler("clear", clear_expenses))
     
     # 添加消息处理器
