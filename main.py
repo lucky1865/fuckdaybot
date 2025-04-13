@@ -9,6 +9,8 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import asyncio
+import time
+import re
 
 # 加载环境变量
 load_dotenv()
@@ -29,8 +31,6 @@ class Expense(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer)
     amount = Column(Float)
-    category = Column(String)
-    description = Column(String)
     date = Column(DateTime, default=datetime.utcnow)
 
 # 创建数据库引擎
@@ -43,88 +43,133 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         '欢迎使用记账机器人！\n'
         '使用以下命令：\n'
-        '/add <金额> <类别> <描述> - 添加一笔支出\n'
-        '/list - 查看最近的支出记录\n'
-        '/stats - 查看支出统计'
+        '直接输入数字记录收支，例如：\n'
+        '+100 - 记录收入100元\n'
+        '-100 - 记录支出100元\n'
+        '/list - 查看最近的收支记录\n'
+        '/stats - 查看收支统计\n'
+        '/clear - 清空账本'
     )
 
-async def add_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # 解析命令参数
-        args = context.args
-        if len(args) < 3:
-            await update.message.reply_text('请使用格式：/add <金额> <类别> <描述>')
-            return
+        text = update.message.text.strip()
+        
+        # 检查是否是数字格式
+        match = re.match(r'^([+-]\d+(?:\.\d+)?)$', text)
+        if not match:
+            return  # 如果不是数字格式，忽略消息
 
-        amount = float(args[0])
-        category = args[1]
-        description = ' '.join(args[2:])
+        amount = float(match.group(1))
 
         # 保存到数据库
         session = Session()
         expense = Expense(
             user_id=update.effective_user.id,
-            amount=amount,
-            category=category,
-            description=description
+            amount=amount
         )
         session.add(expense)
         session.commit()
         session.close()
 
-        await update.message.reply_text(f'已记录支出：{amount}元 - {category} - {description}')
-    except ValueError:
-        await update.message.reply_text('金额必须是数字！')
+        # 根据正负号显示收入或支出
+        if amount > 0:
+            await update.message.reply_text(f'已记录收入：{amount}元')
+        else:
+            await update.message.reply_text(f'已记录支出：{abs(amount)}元')
     except Exception as e:
-        await update.message.reply_text(f'发生错误：{str(e)}')
+        logger.error(f"Error in handle_message: {str(e)}")
+        await update.message.reply_text('记录收支时发生错误，请稍后重试')
 
 async def list_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = Session()
-    expenses = session.query(Expense).filter_by(user_id=update.effective_user.id).order_by(Expense.date.desc()).limit(10).all()
-    session.close()
+    try:
+        session = Session()
+        expenses = session.query(Expense).filter_by(user_id=update.effective_user.id).order_by(Expense.date.desc()).limit(10).all()
+        session.close()
 
-    if not expenses:
-        await update.message.reply_text('暂无支出记录')
-        return
+        if not expenses:
+            await update.message.reply_text('暂无收支记录')
+            return
 
-    message = '最近的支出记录：\n\n'
-    for expense in expenses:
-        message += f'{expense.date.strftime("%Y-%m-%d")} - {expense.amount}元 - {expense.category} - {expense.description}\n'
+        message = '最近的收支记录：\n\n'
+        for expense in expenses:
+            amount_type = '收入' if expense.amount > 0 else '支出'
+            message += f'{expense.date.strftime("%Y-%m-%d")} - {amount_type} {abs(expense.amount)}元\n'
 
-    await update.message.reply_text(message)
+        await update.message.reply_text(message)
+    except Exception as e:
+        logger.error(f"Error in list_expenses: {str(e)}")
+        await update.message.reply_text('获取收支记录时发生错误，请稍后重试')
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = Session()
-    expenses = session.query(Expense).filter_by(user_id=update.effective_user.id).all()
-    session.close()
+    try:
+        session = Session()
+        expenses = session.query(Expense).filter_by(user_id=update.effective_user.id).all()
+        session.close()
 
-    if not expenses:
-        await update.message.reply_text('暂无支出记录')
+        if not expenses:
+            await update.message.reply_text('暂无收支记录')
+            return
+
+        total_income = sum(expense.amount for expense in expenses if expense.amount > 0)
+        total_expense = sum(abs(expense.amount) for expense in expenses if expense.amount < 0)
+        balance = total_income - total_expense
+
+        message = f'总收入：{total_income}元\n'
+        message += f'总支出：{total_expense}元\n'
+        message += f'结余：{balance}元'
+
+        await update.message.reply_text(message)
+    except Exception as e:
+        logger.error(f"Error in stats: {str(e)}")
+        await update.message.reply_text('获取统计信息时发生错误，请稍后重试')
+
+async def clear_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        session = Session()
+        session.query(Expense).filter_by(user_id=update.effective_user.id).delete()
+        session.commit()
+        session.close()
+        await update.message.reply_text('账本已清空')
+    except Exception as e:
+        logger.error(f"Error in clear_expenses: {str(e)}")
+        await update.message.reply_text('清空账本时发生错误，请稍后重试')
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
+
+async def main():
+    # 获取Bot Token
+    token = os.getenv('TELEGRAM_BOT_TOKEN')
+    if not token:
+        logger.error("No TELEGRAM_BOT_TOKEN found in environment variables")
         return
 
-    total = sum(expense.amount for expense in expenses)
-    categories = {}
-    for expense in expenses:
-        categories[expense.category] = categories.get(expense.category, 0) + expense.amount
-
-    message = f'总支出：{total}元\n\n按类别统计：\n'
-    for category, amount in categories.items():
-        message += f'{category}: {amount}元\n'
-
-    await update.message.reply_text(message)
-
-def main():
     # 创建应用
-    application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+    application = Application.builder().token(token).build()
 
     # 添加命令处理器
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("add", add_expense))
     application.add_handler(CommandHandler("list", list_expenses))
     application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("clear", clear_expenses))
+    
+    # 添加消息处理器
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # 添加错误处理器
+    application.add_error_handler(error_handler)
 
     # 启动机器人
-    application.run_polling()
+    while True:
+        try:
+            await application.initialize()
+            await application.start()
+            await application.run_polling()
+        except Exception as e:
+            logger.error(f"Error in main loop: {str(e)}")
+            # 等待一段时间后重试
+            await asyncio.sleep(60)
 
 if __name__ == '__main__':
-    main() 
+    asyncio.run(main()) 
