@@ -264,7 +264,7 @@ def main():
     
     # 添加消息处理器 - 修改这里以支持群组消息
     application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & (filters.ChatType.PRIVATE | filters.ChatType.GROUP),
+        filters.TEXT & ~filters.COMMAND & (filters.ChatType.PRIVATE | filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
         handle_message
     ))
     
